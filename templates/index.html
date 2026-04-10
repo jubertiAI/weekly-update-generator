@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Slack Update Generator</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 24px 16px;
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            margin-bottom: 4px;
+        }
+
+        .subtitle {
+            color: #666;
+            font-size: 0.9rem;
+            margin-bottom: 24px;
+        }
+
+        /* Workflow tabs */
+        .tabs {
+            display: flex;
+            gap: 0;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid #ccc;
+        }
+
+        .tab-btn {
+            flex: 1;
+            padding: 10px 16px;
+            border: none;
+            background: #fff;
+            font-size: 0.95rem;
+            font-weight: 500;
+            cursor: pointer;
+            color: #666;
+            transition: background 0.2s, color 0.2s;
+        }
+
+        .tab-btn:not(:last-child) {
+            border-right: 1px solid #ccc;
+        }
+
+        .tab-btn.active {
+            background: #4A154B;
+            color: #fff;
+        }
+
+        .tab-btn:hover:not(.active) {
+            background: #faf5fb;
+        }
+
+        /* Upload area */
+        .upload-area {
+            border: 2px dashed #ccc;
+            border-radius: 8px;
+            padding: 48px 24px;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.2s, background 0.2s;
+            background: #fff;
+        }
+
+        .upload-area:hover, .upload-area.dragover {
+            border-color: #4A154B;
+            background: #faf5fb;
+        }
+
+        .upload-area p {
+            margin-bottom: 12px;
+            color: #666;
+        }
+
+        .upload-area .browse-btn {
+            display: inline-block;
+            padding: 8px 20px;
+            background: #4A154B;
+            color: #fff;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            cursor: pointer;
+        }
+
+        .upload-area input[type="file"] { display: none; }
+
+        /* Sections that appear after upload */
+        .section {
+            display: none;
+            background: #fff;
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 16px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        }
+
+        .section.visible { display: block; }
+
+        .section h2 {
+            font-size: 1.1rem;
+            margin-bottom: 12px;
+        }
+
+        .section h3 {
+            font-size: 0.95rem;
+            margin: 16px 0 8px;
+            color: #555;
+        }
+
+        /* Week selector */
+        .week-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .week-row select {
+            flex: 1;
+            min-width: 200px;
+            padding: 8px 12px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            background: #fff;
+        }
+
+        /* Stats table */
+        .stats-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 16px;
+        }
+
+        .stats-table th, .stats-table td {
+            text-align: left;
+            padding: 8px 12px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .stats-table th {
+            font-weight: 600;
+            color: #555;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+        }
+
+        .stats-table td:last-child {
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .stats-table tr.total-row {
+            font-weight: 600;
+            border-top: 2px solid #ddd;
+        }
+
+        .stats-table tr.sub-row td:first-child {
+            padding-left: 32px;
+            color: #666;
+        }
+
+        .stats-table tr.section-header td {
+            font-weight: 600;
+            color: #555;
+            padding-top: 14px;
+            border-bottom: 2px solid #eee;
+        }
+
+        .chart-container {
+            max-width: 400px;
+            margin: 0 auto;
+        }
+
+        /* Message preview */
+        .message-box {
+            background: #f8f8f8;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 16px;
+            white-space: pre-wrap;
+            font-family: "Lato", "Helvetica Neue", sans-serif;
+            font-size: 0.95rem;
+            line-height: 1.5;
+        }
+
+        .copy-btn {
+            display: inline-block;
+            margin-top: 12px;
+            padding: 10px 24px;
+            background: #4A154B;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .copy-btn:hover { background: #611f64; }
+
+        .copy-btn.copied {
+            background: #2ea44f;
+        }
+
+        /* Error & loading */
+        .error-msg {
+            color: #d32f2f;
+            background: #fdecea;
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-top: 16px;
+            display: none;
+        }
+
+        .error-msg.visible { display: block; }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #666;
+            display: none;
+        }
+
+        .loading.visible { display: block; }
+
+        .file-name {
+            margin-top: 8px;
+            font-size: 0.85rem;
+            color: #666;
+        }
+
+        /* Instructions panel */
+        .instructions {
+            background: #f0edf1;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            overflow: hidden;
+        }
+
+        .instructions summary {
+            padding: 12px 16px;
+            font-weight: 600;
+            font-size: 0.95rem;
+            cursor: pointer;
+            color: #4A154B;
+            list-style: none;
+        }
+
+        .instructions summary::-webkit-details-marker { display: none; }
+
+        .instructions summary::before {
+            content: "\25B6";
+            display: inline-block;
+            margin-right: 8px;
+            font-size: 0.7rem;
+            transition: transform 0.2s;
+        }
+
+        .instructions[open] summary::before {
+            transform: rotate(90deg);
+        }
+
+        .instructions ol {
+            padding: 0 16px 16px 36px;
+            margin: 0;
+        }
+
+        .instructions li {
+            margin-bottom: 8px;
+            font-size: 0.9rem;
+            line-height: 1.5;
+            color: #444;
+        }
+
+        .instructions li:last-child {
+            margin-bottom: 0;
+        }
+
+        .instructions a {
+            color: #4A154B;
+            text-decoration: underline;
+            word-break: break-all;
+        }
+
+        .instructions a:hover {
+            color: #611f64;
+        }
+
+        .instructions .note {
+            font-weight: 600;
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Slack Update Generator</h1>
+        <p class="subtitle">Upload your CSV, verify the numbers, copy the message.</p>
+
+        <!-- Workflow tabs -->
+        <div class="tabs">
+            <button class="tab-btn active" data-workflow="redis">Redis</button>
+            <button class="tab-btn" data-workflow="harvey">Harvey</button>
+        </div>
+
+        <!-- Instructions -->
+        <details class="instructions" id="redisInstructions" open>
+            <summary>How to prepare your file</summary>
+            <ol>
+                <li>Go to the inbound flow and <a href="https://platform.scalestack.ai/flows/12/68b99b4983f7e8a3407de90c?view=data" target="_blank" rel="noopener">download the latest output</a></li>
+                <li>Upload the downloaded CSV here and verify the numbers</li>
+                <li>Go to <a href="https://platform.scalestack.ai/flows/12/69a5a05b332428c04f2b3e32?view=build" target="_blank" rel="noopener">this flow</a> to import contacts created in the last 7 days (update the import filter, values are already selected)</li>
+                <li>Once imported, update the # of contacts in the message</li>
+                <li>Copy the message and send it in <strong>#scalestack-redis</strong></li>
+            </ol>
+        </details>
+
+        <details class="instructions" id="harveyInstructions" style="display: none;" open>
+            <summary>How to prepare your file</summary>
+            <ol>
+                <li>Go to the inbound flow and <a href="https://platform.scalestack.ai/flows/73/68a772653ba2117a6cc0c996?view=data" target="_blank" rel="noopener">download the latest output</a></li>
+                <li><span class="note">Important:</span> before downloading, hide these 3 columns that may show errors: <strong>apollo_departments</strong>, <strong>DS3_total_leads</strong>, <strong>Final_Answer</strong></li>
+                <li><span class="note">Important:</span> download starting from row #70k because the full file is too large to download at once</li>
+                <li>Upload the downloaded CSV here and verify the numbers</li>
+                <li>Copy the message and send it in <strong>#scalestack-harvey</strong></li>
+            </ol>
+        </details>
+
+        <!-- Upload -->
+        <div class="upload-area" id="uploadArea">
+            <p>Drag &amp; drop your CSV file here</p>
+            <span class="browse-btn">Browse files</span>
+            <input type="file" id="fileInput" accept=".csv">
+            <div class="file-name" id="fileName"></div>
+        </div>
+
+        <div class="loading" id="loading">Processing CSV...</div>
+        <div class="error-msg" id="errorMsg"></div>
+
+        <!-- Week selector -->
+        <div class="section" id="weekSection">
+            <h2>Date Range</h2>
+            <div class="week-row">
+                <label for="weekSelect">Week:</label>
+                <select id="weekSelect"></select>
+            </div>
+        </div>
+
+        <!-- Stats -->
+        <div class="section" id="statsSection">
+            <h2>Status Breakdown</h2>
+            <table class="stats-table">
+                <thead>
+                    <tr><th>Status</th><th>Count</th></tr>
+                </thead>
+                <tbody id="statsBody"></tbody>
+            </table>
+            <div class="chart-container">
+                <canvas id="statusChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Message -->
+        <div class="section" id="messageSection">
+            <h2>Slack Message</h2>
+            <div class="message-box" id="messageBox"></div>
+            <button class="copy-btn" id="copyBtn">Copy to Clipboard</button>
+        </div>
+    </div>
+
+    <script>
+        // State
+        let sessionId = null;
+        let currentCounts = null;
+        let currentWeek = null;
+        let currentWorkflow = "redis";
+        let statusChart = null;
+
+        // DOM refs
+        const uploadArea = document.getElementById("uploadArea");
+        const fileInput = document.getElementById("fileInput");
+        const fileName = document.getElementById("fileName");
+        const loading = document.getElementById("loading");
+        const errorMsg = document.getElementById("errorMsg");
+        const weekSection = document.getElementById("weekSection");
+        const weekSelect = document.getElementById("weekSelect");
+        const statsSection = document.getElementById("statsSection");
+        const statsBody = document.getElementById("statsBody");
+        const messageSection = document.getElementById("messageSection");
+        const messageBox = document.getElementById("messageBox");
+        const copyBtn = document.getElementById("copyBtn");
+        const tabBtns = document.querySelectorAll(".tab-btn");
+        const redisInstructions = document.getElementById("redisInstructions");
+        const harveyInstructions = document.getElementById("harveyInstructions");
+
+        // Helpers
+        function fmt(n) {
+            return n.toLocaleString("en-US");
+        }
+
+        function showError(msg) {
+            errorMsg.textContent = msg;
+            errorMsg.classList.add("visible");
+        }
+
+        function hideError() {
+            errorMsg.classList.remove("visible");
+        }
+
+        function showLoading() {
+            loading.classList.add("visible");
+        }
+
+        function hideLoading() {
+            loading.classList.remove("visible");
+        }
+
+        function hideSections() {
+            weekSection.classList.remove("visible");
+            statsSection.classList.remove("visible");
+            messageSection.classList.remove("visible");
+        }
+
+        // Workflow tab switching
+        tabBtns.forEach((btn) => {
+            btn.addEventListener("click", () => {
+                if (btn.dataset.workflow === currentWorkflow) return;
+                currentWorkflow = btn.dataset.workflow;
+                tabBtns.forEach((b) => b.classList.remove("active"));
+                btn.classList.add("active");
+                // Reset state on tab switch
+                sessionId = null;
+                currentCounts = null;
+                currentWeek = null;
+                hideError();
+                hideSections();
+                fileInput.value = "";
+                fileName.textContent = "";
+                // Show the right instructions panel
+                redisInstructions.style.display = currentWorkflow === "redis" ? "" : "none";
+                harveyInstructions.style.display = currentWorkflow === "harvey" ? "" : "none";
+            });
+        });
+
+        // Upload handlers
+        uploadArea.addEventListener("click", () => fileInput.click());
+
+        uploadArea.addEventListener("dragover", (e) => {
+            e.preventDefault();
+            uploadArea.classList.add("dragover");
+        });
+
+        uploadArea.addEventListener("dragleave", () => {
+            uploadArea.classList.remove("dragover");
+        });
+
+        uploadArea.addEventListener("drop", (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove("dragover");
+            const file = e.dataTransfer.files[0];
+            if (file) handleFile(file);
+        });
+
+        fileInput.addEventListener("change", () => {
+            if (fileInput.files[0]) handleFile(fileInput.files[0]);
+        });
+
+        async function handleFile(file) {
+            if (!file.name.endsWith(".csv")) {
+                showError("Please upload a .csv file.");
+                return;
+            }
+
+            hideError();
+            hideSections();
+            showLoading();
+            fileName.textContent = file.name;
+
+            const formData = new FormData();
+            formData.append("file", file);
+            formData.append("workflow", currentWorkflow);
+
+            try {
+                const resp = await fetch("/upload", { method: "POST", body: formData });
+                const data = await resp.json();
+
+                hideLoading();
+
+                if (!resp.ok) {
+                    showError(data.error || "Upload failed.");
+                    return;
+                }
+
+                sessionId = data.session_id;
+                populateWeeks(data.weeks, data.selected_week);
+                renderResults(data);
+            } catch (err) {
+                hideLoading();
+                showError("Network error. Is the server running?");
+            }
+        }
+
+        function populateWeeks(weeks, selected) {
+            weekSelect.innerHTML = "";
+            weeks.forEach((w) => {
+                const opt = document.createElement("option");
+                opt.value = w.monday + "|" + w.sunday;
+                opt.textContent = w.label;
+                if (w.monday === selected.monday) opt.selected = true;
+                weekSelect.appendChild(opt);
+            });
+            weekSection.classList.add("visible");
+        }
+
+        weekSelect.addEventListener("change", async () => {
+            const [monday, sunday] = weekSelect.value.split("|");
+            hideError();
+            showLoading();
+
+            try {
+                const resp = await fetch("/refilter", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ session_id: sessionId, monday, sunday }),
+                });
+                const data = await resp.json();
+                hideLoading();
+
+                if (!resp.ok) {
+                    showError(data.error || "Refilter failed.");
+                    return;
+                }
+
+                renderResults(data);
+            } catch (err) {
+                hideLoading();
+                showError("Network error.");
+            }
+        });
+
+        // Colors for chart bars
+        const BAR_COLORS = ["#4A154B", "#7C3085", "#E01E5A", "#ECB22E", "#2EB67D", "#36C5F0", "#aaa", "#666"];
+
+        function renderResults(data) {
+            currentCounts = data.counts;
+            currentWeek = data.selected_week;
+            const workflow = data.workflow || currentWorkflow;
+
+            if (workflow === "harvey") {
+                renderHarveyResults(data);
+            } else {
+                renderRedisResults(data);
+            }
+        }
+
+        // --- Redis rendering (unchanged logic) ---
+        function renderRedisResults(data) {
+            const c = data.counts;
+
+            let rows = "";
+            c.status_counts.forEach((s) => {
+                rows += `<tr><td>${s.label}</td><td>${fmt(s.count)}</td></tr>`;
+            });
+            rows += `<tr class="total-row"><td>Filtered (this week)</td><td>${fmt(c.filtered)}</td></tr>`;
+            rows += `<tr><td>Total rows in file</td><td>${fmt(c.total_file)}</td></tr>`;
+            statsBody.innerHTML = rows;
+
+            renderChart(c.status_counts);
+            statsSection.classList.add("visible");
+
+            const weekLabel = data.selected_week.label;
+            const msg = `Hello team! Quick weekly update on the live cleansing account workflow.
+
+Here's last week's snapshot (${weekLabel}):
+* ${fmt(c.filtered)} new accounts created in SFDC
+   * ${fmt(c.enriched_validated)} enriched and validated
+   * ${fmt(c.junk)} identified as invalid/junk
+   * ${fmt(c.duplicate)} identified as duplicates
+
+Everything running smoothly, no action needed on your side \u{1F64C}
+
+For visibility on the contacts side: X contacts were created last week.`;
+
+            messageBox.textContent = msg;
+            messageSection.classList.add("visible");
+
+            copyBtn.textContent = "Copy to Clipboard";
+            copyBtn.classList.remove("copied");
+        }
+
+        // --- Harvey rendering ---
+        function renderHarveyResults(data) {
+            const c = data.counts;
+
+            // Stats table with sections
+            let rows = "";
+
+            // Account Type section
+            rows += `<tr class="section-header"><td colspan="2">Account Type</td></tr>`;
+            c.account_types.forEach((a) => {
+                rows += `<tr><td>${a.label}</td><td>${fmt(a.count)} (${a.pct}%)</td></tr>`;
+            });
+
+            // Law Firm sub-types
+            rows += `<tr class="section-header"><td colspan="2">Law Firm Sub-types</td></tr>`;
+            c.law_firm_subtypes.forEach((s) => {
+                rows += `<tr class="sub-row"><td>${s.label}</td><td>${fmt(s.count)} (${s.pct}% of Law Firms)</td></tr>`;
+            });
+
+            // Regions
+            rows += `<tr class="section-header"><td colspan="2">Region</td></tr>`;
+            c.regions.forEach((r) => {
+                rows += `<tr><td>${r.label}</td><td>${fmt(r.count)} (${r.pct}%)</td></tr>`;
+            });
+
+            // Totals
+            rows += `<tr class="total-row"><td>Filtered (this week)</td><td>${fmt(c.filtered)}</td></tr>`;
+            rows += `<tr><td>Total rows in file</td><td>${fmt(c.total_file)}</td></tr>`;
+
+            statsBody.innerHTML = rows;
+
+            // Chart: account types
+            renderChart(c.account_types.map((a) => ({ label: a.label, count: a.count })));
+            statsSection.classList.add("visible");
+
+            // Harvey Slack message
+            const weekLabel = data.selected_week.label;
+            const lf = c.account_types.find((a) => a.label === "Law Firm");
+            const lf_subtypes = c.law_firm_subtypes;
+
+            let msg = `Hello team! Quick weekly update on the live lead enrichment workflow.
+
+Here's last week's snapshot (${weekLabel}):
+* ${fmt(c.filtered)} new leads
+
+By account type:`;
+
+            c.account_types.forEach((a) => {
+                msg += `\n* ${a.label}: ${fmt(a.count)} (${a.pct}%)`;
+                if (a.label === "Law Firm") {
+                    lf_subtypes.forEach((s) => {
+                        msg += `\n   * ${s.label}: ${fmt(s.count)} (${s.pct}% of Law Firms)`;
+                    });
+                }
+            });
+
+            msg += `\n\nBy region:`;
+            c.regions.forEach((r) => {
+                msg += `\n* ${r.label}: ${fmt(r.count)} (${r.pct}%)`;
+            });
+
+            msg += `\n\nEverything running smoothly, no action needed on your side \u{1F64C}`;
+
+            messageBox.textContent = msg;
+            messageSection.classList.add("visible");
+
+            copyBtn.textContent = "Copy to Clipboard";
+            copyBtn.classList.remove("copied");
+        }
+
+        function renderChart(statusCounts) {
+            const ctx = document.getElementById("statusChart").getContext("2d");
+            if (statusChart) statusChart.destroy();
+
+            const labels = statusCounts.map((s) => s.label);
+            const values = statusCounts.map((s) => s.count);
+            const colors = statusCounts.map((_, i) => BAR_COLORS[i % BAR_COLORS.length]);
+
+            statusChart = new Chart(ctx, {
+                type: "bar",
+                data: {
+                    labels,
+                    datasets: [{
+                        label: "Count",
+                        data: values,
+                        backgroundColor: colors,
+                        borderRadius: 4,
+                    }],
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: { display: false },
+                    },
+                    scales: {
+                        y: { beginAtZero: true },
+                    },
+                },
+            });
+        }
+
+        // Copy to clipboard
+        copyBtn.addEventListener("click", async () => {
+            try {
+                await navigator.clipboard.writeText(messageBox.textContent);
+                copyBtn.textContent = "Copied!";
+                copyBtn.classList.add("copied");
+                setTimeout(() => {
+                    copyBtn.textContent = "Copy to Clipboard";
+                    copyBtn.classList.remove("copied");
+                }, 2000);
+            } catch (err) {
+                const range = document.createRange();
+                range.selectNodeContents(messageBox);
+                const sel = window.getSelection();
+                sel.removeAllRanges();
+                sel.addRange(range);
+                document.execCommand("copy");
+                sel.removeAllRanges();
+                copyBtn.textContent = "Copied!";
+                copyBtn.classList.add("copied");
+                setTimeout(() => {
+                    copyBtn.textContent = "Copy to Clipboard";
+                    copyBtn.classList.remove("copied");
+                }, 2000);
+            }
+        });
+    </script>
+</body>
+</html>
