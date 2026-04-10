@@ -1,4 +1,5 @@
 import csv
+import gc
 import io
 import os
 import sys
@@ -12,6 +13,10 @@ from flask import Flask, jsonify, render_template, request
 csv.field_size_limit(10_000_000)
 
 app = Flask(__name__)
+
+# Reject uploads larger than 60 MB before reading into memory
+MAX_UPLOAD_BYTES = 60 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
 
 # In-memory store for parsed CSV data, keyed by session ID.
 # Each entry: {"data": [...], "workflow": "redis"|"harvey", "created": timestamp}
@@ -131,14 +136,32 @@ def _format_week_label(monday, sunday):
 # ---------------------------------------------------------------------------
 # Redis workflow (existing)
 # ---------------------------------------------------------------------------
-def _parse_csv(file_content):
-    """Parse Redis CSV: extract date + status_account columns."""
-    reader = csv.DictReader(io.StringIO(file_content))
+def _parse_csv(file_stream):
+    """Parse Redis CSV row-by-row, keeping only date + status_account.
+
+    Uses csv.reader with index lookup instead of DictReader to avoid
+    loading all columns into memory (important for large files).
+    """
+    text_stream = io.TextIOWrapper(file_stream, encoding="utf-8", errors="replace")
+    reader = csv.reader(text_stream)
+
+    # Read header and find column indices
+    try:
+        header = next(reader)
+    except StopIteration:
+        return []
+    col_map = {name.strip(): i for i, name in enumerate(header)}
+    date_idx = col_map.get("date")
+    status_idx = col_map.get("status_account")
+    if date_idx is None or status_idx is None:
+        return []
+
     rows = []
-    for row in reader:
-        date_val = row.get("date", "")
-        status_val = row.get("status_account", "").strip()
-        dt = _parse_date(date_val)
+    for fields in reader:
+        if len(fields) <= max(date_idx, status_idx):
+            continue
+        dt = _parse_date(fields[date_idx])
+        status_val = fields[status_idx].strip()
         if dt is not None and status_val:
             rows.append((dt, status_val))
     return rows
@@ -205,21 +228,37 @@ def _build_response(rows, monday, sunday, session_id, weeks):
 # ---------------------------------------------------------------------------
 # Harvey workflow (new)
 # ---------------------------------------------------------------------------
-def _parse_harvey_csv(file_content):
-    """Parse Harvey CSV: extract date_day, legal_team_type, organization_type, normalized_country.
+def _parse_harvey_csv(file_stream):
+    """Parse Harvey CSV row-by-row, keeping only the 4 columns we need.
 
-    Returns list of (datetime, legal_team_type, org_type, country) tuples.
+    Uses csv.reader with index lookup so the large reasoning columns
+    are discarded immediately and never stored in memory.
     """
-    reader = csv.DictReader(io.StringIO(file_content))
+    text_stream = io.TextIOWrapper(file_stream, encoding="utf-8", errors="replace")
+    reader = csv.reader(text_stream)
+
+    try:
+        header = next(reader)
+    except StopIteration:
+        return []
+    col_map = {name.strip(): i for i, name in enumerate(header)}
+    date_idx = col_map.get("date_day")
+    if date_idx is None:
+        return []
+    ltt_idx = col_map.get("legal_team_type")
+    ot_idx = col_map.get("organization_type")
+    co_idx = col_map.get("normalized_country")
+
     rows = []
-    for row in reader:
-        date_val = row.get("date_day", "")
-        dt = _parse_date(date_val)
+    for fields in reader:
+        if len(fields) <= date_idx:
+            continue
+        dt = _parse_date(fields[date_idx])
         if dt is None:
             continue
-        legal_team_type = row.get("legal_team_type", "").strip()
-        org_type = row.get("organization_type", "").strip()
-        country = row.get("normalized_country", "").strip()
+        legal_team_type = fields[ltt_idx].strip() if ltt_idx is not None and ltt_idx < len(fields) else ""
+        org_type = fields[ot_idx].strip() if ot_idx is not None and ot_idx < len(fields) else ""
+        country = fields[co_idx].strip() if co_idx is not None and co_idx < len(fields) else ""
         rows.append((dt, legal_team_type, org_type, country))
     return rows
 
@@ -320,6 +359,11 @@ def _build_harvey_response(rows, monday, sunday, session_id, weeks):
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+@app.errorhandler(413)
+def file_too_large(e):
+    return jsonify({"error": "File too large. Maximum size is 60 MB."}), 413
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -340,18 +384,20 @@ def upload():
     if workflow not in ("redis", "harvey"):
         return jsonify({"error": "Unknown workflow"}), 400
 
+    # Stream directly from the upload — never load the full file as a string.
+    # csv.reader reads row-by-row; parsers extract only the columns we need.
     try:
-        content = file.read().decode("utf-8", errors="replace")
+        if workflow == "harvey":
+            rows = _parse_harvey_csv(file.stream)
+            error_msg = "No valid rows found. Check that the CSV has a 'date_day' column."
+        else:
+            rows = _parse_csv(file.stream)
+            error_msg = "No valid rows found. Check that the CSV has 'date' and 'status_account' columns."
     except Exception:
         return jsonify({"error": "Could not read file. Make sure it's a valid CSV."}), 400
-
-    # Parse with the right parser
-    if workflow == "harvey":
-        rows = _parse_harvey_csv(content)
-        error_msg = "No valid rows found. Check that the CSV has a 'date_day' column."
-    else:
-        rows = _parse_csv(content)
-        error_msg = "No valid rows found. Check that the CSV has 'date' and 'status_account' columns."
+    finally:
+        file.close()
+        gc.collect()
 
     if not rows:
         return jsonify({"error": error_msg}), 400
