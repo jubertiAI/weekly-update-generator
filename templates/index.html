@@ -354,6 +354,7 @@
 
         <div class="loading" id="loading">Processing CSV...</div>
         <div class="error-msg" id="errorMsg"></div>
+        <div class="error-msg" id="skipWarning" style="color:#b45309;background:#fef3c7;"></div>
 
         <!-- Week selector -->
         <div class="section" id="weekSection">
@@ -437,6 +438,7 @@
             weekSection.classList.remove("visible");
             statsSection.classList.remove("visible");
             messageSection.classList.remove("visible");
+            document.getElementById("skipWarning").classList.remove("visible");
         }
 
         // Workflow tab switching
@@ -571,9 +573,28 @@
             }
         }
 
-        // --- Redis rendering (unchanged logic) ---
+        // --- Redis rendering ---
         function renderRedisResults(data) {
             const c = data.counts;
+
+            // Show skip warning if rows were dropped during parsing
+            const skipWarn = document.getElementById("skipWarning");
+            if (c.skipped_rows) {
+                const s = c.skipped_rows;
+                const total = s.skipped_bad_date + s.skipped_empty_status + s.skipped_short_row;
+                if (total > 0) {
+                    let parts = [];
+                    if (s.skipped_bad_date > 0) parts.push(`${fmt(s.skipped_bad_date)} with unreadable dates`);
+                    if (s.skipped_empty_status > 0) parts.push(`${fmt(s.skipped_empty_status)} with empty status`);
+                    if (s.skipped_short_row > 0) parts.push(`${fmt(s.skipped_short_row)} malformed rows`);
+                    skipWarn.textContent = `Warning: ${fmt(total)} rows were skipped during parsing (${parts.join(", ")}). Parsed ${fmt(c.total_file)} of ${fmt(c.total_file + total)} total rows.`;
+                    skipWarn.classList.add("visible");
+                } else {
+                    skipWarn.classList.remove("visible");
+                }
+            } else {
+                skipWarn.classList.remove("visible");
+            }
 
             let rows = "";
             c.status_counts.forEach((s) => {

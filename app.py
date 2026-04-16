@@ -82,11 +82,23 @@ def _parse_date(date_str):
     date_str = date_str.strip()
     if not date_str:
         return None
-    for fmt in ("%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M", "%m/%d/%Y"):
+    for fmt in (
+        "%m/%d/%Y %H:%M:%S",
+        "%m/%d/%Y %H:%M",
+        "%m/%d/%Y",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d",
+        "%m/%d/%Y %I:%M:%S %p",
+        "%m/%d/%Y %I:%M %p",
+    ):
         try:
             return datetime.strptime(date_str, fmt)
         except ValueError:
             continue
+    # Handle milliseconds: strip .000 suffix and retry
+    if "." in date_str:
+        truncated = date_str.rsplit(".", 1)[0]
+        return _parse_date(truncated)
     return None
 
 
@@ -142,29 +154,43 @@ def _parse_csv(file_stream):
     Uses csv.reader with index lookup instead of DictReader to avoid
     loading all columns into memory (important for large files).
     """
-    text_stream = io.TextIOWrapper(file_stream, encoding="utf-8", errors="replace")
+    text_stream = io.TextIOWrapper(file_stream, encoding="utf-8-sig", errors="replace")
     reader = csv.reader(text_stream)
 
     # Read header and find column indices
     try:
         header = next(reader)
     except StopIteration:
-        return []
+        return [], {"skipped_bad_date": 0, "skipped_empty_status": 0, "skipped_short_row": 0}
     col_map = {name.strip(): i for i, name in enumerate(header)}
     date_idx = col_map.get("date")
     status_idx = col_map.get("status_account")
     if date_idx is None or status_idx is None:
-        return []
+        return [], {"skipped_bad_date": 0, "skipped_empty_status": 0, "skipped_short_row": 0}
 
     rows = []
+    skipped_bad_date = 0
+    skipped_empty_status = 0
+    skipped_short_row = 0
     for fields in reader:
         if len(fields) <= max(date_idx, status_idx):
+            skipped_short_row += 1
             continue
         dt = _parse_date(fields[date_idx])
         status_val = fields[status_idx].strip()
-        if dt is not None and status_val:
-            rows.append((dt, status_val))
-    return rows
+        if dt is None:
+            skipped_bad_date += 1
+            continue
+        if not status_val:
+            skipped_empty_status += 1
+            continue
+        rows.append((dt, status_val))
+    skip_info = {
+        "skipped_bad_date": skipped_bad_date,
+        "skipped_empty_status": skipped_empty_status,
+        "skipped_short_row": skipped_short_row,
+    }
+    return rows, skip_info
 
 
 def _count_statuses(rows, monday, sunday):
@@ -201,9 +227,11 @@ def _count_statuses(rows, monday, sunday):
     }
 
 
-def _build_response(rows, monday, sunday, session_id, weeks):
+def _build_response(rows, monday, sunday, session_id, weeks, skip_info=None):
     """Build the JSON response for Redis workflow."""
     counts = _count_statuses(rows, monday, sunday)
+    if skip_info:
+        counts["skipped_rows"] = skip_info
     week_options = [
         {
             "label": _format_week_label(m, s),
@@ -234,7 +262,7 @@ def _parse_harvey_csv(file_stream):
     Uses csv.reader with index lookup so the large reasoning columns
     are discarded immediately and never stored in memory.
     """
-    text_stream = io.TextIOWrapper(file_stream, encoding="utf-8", errors="replace")
+    text_stream = io.TextIOWrapper(file_stream, encoding="utf-8-sig", errors="replace")
     reader = csv.reader(text_stream)
 
     try:
@@ -386,12 +414,13 @@ def upload():
 
     # Stream directly from the upload — never load the full file as a string.
     # csv.reader reads row-by-row; parsers extract only the columns we need.
+    skip_info = None
     try:
         if workflow == "harvey":
             rows = _parse_harvey_csv(file.stream)
             error_msg = "No valid rows found. Check that the CSV has a 'date_day' column."
         else:
-            rows = _parse_csv(file.stream)
+            rows, skip_info = _parse_csv(file.stream)
             error_msg = "No valid rows found. Check that the CSV has 'date' and 'status_account' columns."
     except Exception:
         return jsonify({"error": "Could not read file. Make sure it's a valid CSV."}), 400
@@ -410,11 +439,14 @@ def upload():
     monday, sunday = best_week
 
     session_id = str(uuid.uuid4())
-    _sessions[session_id] = {"data": rows, "workflow": workflow, "created": time.time()}
+    _sessions[session_id] = {
+        "data": rows, "workflow": workflow, "created": time.time(),
+        "skip_info": skip_info,
+    }
 
     if workflow == "harvey":
         return jsonify(_build_harvey_response(rows, monday, sunday, session_id, weeks))
-    return jsonify(_build_response(rows, monday, sunday, session_id, weeks))
+    return jsonify(_build_response(rows, monday, sunday, session_id, weeks, skip_info))
 
 
 @app.route("/refilter", methods=["POST"])
@@ -444,11 +476,12 @@ def refilter():
 
     rows = session["data"]
     workflow = session.get("workflow", "redis")
+    skip_info = session.get("skip_info")
     weeks = _get_week_ranges(rows)
 
     if workflow == "harvey":
         return jsonify(_build_harvey_response(rows, monday, sunday, session_id, weeks))
-    return jsonify(_build_response(rows, monday, sunday, session_id, weeks))
+    return jsonify(_build_response(rows, monday, sunday, session_id, weeks, skip_info))
 
 
 if __name__ == "__main__":
