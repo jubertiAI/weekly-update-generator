@@ -1,0 +1,12 @@
+services:
+  - type: cron
+    name: flight-tracker-eze-paris
+    runtime: python
+    schedule: "0 11,17,1 * * *"  # 3x/day: 8am, 2pm, 10pm ART (UTC-3)
+    buildCommand: pip install -r requirements.txt
+    startCommand: python tracker.py
+    envVars:
+      - key: SERPAPI_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
