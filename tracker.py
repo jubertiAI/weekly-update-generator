@@ -248,7 +248,8 @@ def build_alert_message(flights):
 
         block = (
             f"\u2708\ufe0f {ob['airline']} \u2022 {stops_text}\n"
-            f"\U0001f570 Departs: {dep_full} \u2192 Arrives: {arr_full}\n"
+            f"\U0001f570 Ida: {dep_full} \u2192 {arr_full}\n"
+            f"\U0001f570 Vuelta: {RETURN_DATE}\n"
             f"\U0001f4b0 PRICE: ${f['price']} USD"
         )
         flight_blocks.append(block)
