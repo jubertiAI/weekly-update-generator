@@ -1,8 +1,8 @@
 services:
-  - type: cron
+  - type: web
     name: flight-tracker-eze-paris
     runtime: python
-    schedule: "0 11,14,18,0 * * *"  # 4x/day: 8am, 11am, 3pm, 9pm ART (UTC-3)
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python tracker.py
     envVars:

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Flight price tracker: EZE -> Paris (CDG/ORY/BVA) round trip.
+Runs as a Flask web service with APScheduler handling scheduled checks.
 Searches via SerpApi Google Flights, filters by time/stops/layover,
 and sends Spanish-language price alerts to a Telegram chat.
 """
@@ -10,6 +11,10 @@ import sys
 import csv
 import requests
 from datetime import datetime
+from flask import Flask
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+import pytz
 
 
 # ── Configuration ──────────────────────────────────────────────────
@@ -35,8 +40,17 @@ MAX_STOPS = 1                 # Direct or 1 stop only
 # CSV log
 CSV_FILE = "paris_price_history.csv"
 
-# Paris airport codes (for identifying arrival)
-PARIS_AIRPORTS = {"CDG", "ORY", "BVA"}
+# Timezone for scheduling
+BUE_TZ = pytz.timezone("America/Argentina/Buenos_Aires")
+
+
+# ── Flask app ────────────────────────────────────────────────────
+app = Flask(__name__)
+
+
+@app.route("/")
+def health():
+    return "Flight tracker running"
 
 
 # ── SerpApi search ────────────────────────────────────────────────
@@ -44,7 +58,7 @@ def search_flights():
     """Call SerpApi Google Flights for EZE -> Paris round trip."""
     if not SERPAPI_KEY:
         print("ERROR: SERPAPI_KEY environment variable not set")
-        sys.exit(1)
+        return {}
 
     params = {
         "engine": "google_flights",
@@ -205,11 +219,6 @@ def format_stops(outbound):
 
 
 # ── Message building ─────────────────────────────────────────────
-SEARCH_PARAMS = (
-    "EZE\u2192Paris, ida vie 8/8 noche, vuelta sab 16/8, "
-    "max 1 escala, solo carry-on"
-)
-
 LASTMINUTE_REMINDER = (
     "\U0001f4a1 Record\u00e1 chequear el mismo vuelo en lastminute.com\n"
     "para usar tu cr\u00e9dito de \u20ac300"
@@ -244,7 +253,7 @@ def build_alert_message(flights):
         )
         flight_blocks.append(block)
 
-    # Google Flights search link (not a specific booking token)
+    # Google Flights search link
     search_link = (
         "https://www.google.com/travel/flights?q="
         f"Flights+EZE+to+Paris+{OUTBOUND_DATE}+return+{RETURN_DATE}"
@@ -291,7 +300,7 @@ def send_telegram(message):
     """Send a message to the Telegram chat."""
     if not TELEGRAM_BOT_TOKEN:
         print("ERROR: TELEGRAM_BOT_TOKEN environment variable not set")
-        sys.exit(1)
+        return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
@@ -309,8 +318,39 @@ def send_telegram(message):
     return result
 
 
-# ── Main ─────────────────────────────────────────────────────────
+# ── Scheduled check ──────────────────────────────────────────────
+def check_flights():
+    """Run a flight search, build the message, and send to Telegram."""
+    now = datetime.now(BUE_TZ).strftime("%Y-%m-%d %H:%M %Z")
+    print(f"\n[{now}] Running scheduled flight check...")
+
+    try:
+        data = search_flights()
+        flights = parse_flights(data)
+
+        if not flights:
+            msg = (
+                "\u2708\ufe0f Sin resultados para EZE \u2192 Paris (8-16 Ago)\n"
+                "No se encontraron vuelos con los filtros actuales.\n"
+                "Seguimos chequeando 4x/dia"
+            )
+            print("No flights match filters.")
+            send_telegram(msg)
+            return
+
+        print(f"Found {len(flights)} flights. Cheapest: ${flights[0]['price']} USD")
+        message = build_alert_message(flights)
+        log_to_csv(flights[0])
+        send_telegram(message)
+        print("Sent to Telegram.")
+
+    except Exception as e:
+        print(f"Error during flight check: {e}")
+
+
+# ── CLI support ──────────────────────────────────────────────────
 def main():
+    """Run a single check from the command line (for testing)."""
     dry_run = "--dry-run" in sys.argv
 
     print(f"Searching flights: {DEPARTURE_ID} -> {ARRIVAL_ID}")
@@ -323,9 +363,9 @@ def main():
 
     if not flights:
         msg = (
-            f"\u2708\ufe0f Sin resultados para EZE \u2192 Paris (8-16 Ago)\n"
-            f"No se encontraron vuelos con los filtros actuales.\n"
-            f"Seguimos chequeando 4x/dia"
+            "\u2708\ufe0f Sin resultados para EZE \u2192 Paris (8-16 Ago)\n"
+            "No se encontraron vuelos con los filtros actuales.\n"
+            "Seguimos chequeando 4x/dia"
         )
         print("No flights match filters.")
         print()
@@ -363,5 +403,26 @@ def main():
         print("Sent to Telegram.")
 
 
+# ── Entry point ──────────────────────────────────────────────────
 if __name__ == "__main__":
-    main()
+    # CLI mode: python tracker.py [--dry-run]
+    if "--dry-run" in sys.argv or len(sys.argv) > 1:
+        main()
+    else:
+        # Web service mode: start scheduler + Flask
+        scheduler = BackgroundScheduler(timezone=BUE_TZ)
+
+        # 4x/day: 8am, 11am, 3pm, 9pm Buenos Aires time
+        scheduler.add_job(
+            check_flights,
+            CronTrigger(hour="8,11,15,21", minute=0, timezone=BUE_TZ),
+            id="flight_check",
+        )
+        scheduler.start()
+        print("Scheduler started: 4x/day at 8am, 11am, 3pm, 9pm ART")
+
+        # Run one check immediately on startup
+        check_flights()
+
+        port = int(os.environ.get("PORT", 5000))
+        app.run(host="0.0.0.0", port=port)
