@@ -9,6 +9,8 @@ and sends Spanish-language price alerts to a Telegram chat.
 import os
 import sys
 import csv
+import threading
+import time
 import requests
 from datetime import datetime
 from flask import Flask
@@ -404,6 +406,23 @@ def main():
         print("Sent to Telegram.")
 
 
+# ── Keep-alive ping ──────────────────────────────────────────────
+def keep_alive():
+    """Ping our own health endpoint every 10 minutes to prevent
+    Render free tier from spinning down the service."""
+    render_url = os.environ.get("RENDER_EXTERNAL_URL")
+    if not render_url:
+        print("RENDER_EXTERNAL_URL not set, keep-alive disabled")
+        return
+    print(f"Keep-alive started, pinging {render_url} every 10 min")
+    while True:
+        time.sleep(600)  # 10 minutes
+        try:
+            requests.get(render_url, timeout=10)
+        except Exception:
+            pass  # Best effort, don't crash
+
+
 # ── Entry point ──────────────────────────────────────────────────
 if __name__ == "__main__":
     # CLI mode: python tracker.py [--dry-run]
@@ -421,6 +440,9 @@ if __name__ == "__main__":
         )
         scheduler.start()
         print("Scheduler started: 4x/day at 8am, 11am, 3pm, 9pm ART")
+
+        # Keep-alive thread to prevent Render free tier spin-down
+        threading.Thread(target=keep_alive, daemon=True).start()
 
         # Run one check immediately on startup
         check_flights()
