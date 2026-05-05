@@ -1,12 +1,7 @@
 services:
   - type: web
-    name: flight-tracker-eze-paris
+    name: slack-update-generator
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python tracker.py
-    envVars:
-      - key: SERPAPI_KEY
-        sync: false
-      - key: TELEGRAM_BOT_TOKEN
-        sync: false
+    startCommand: python app.py
