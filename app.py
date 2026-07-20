@@ -369,15 +369,19 @@ def _count_harvey(rows, monday, sunday):
         for label in ["AMER", "EMEA", "ROW"]
     ]
 
-    # --- Lawyer headcount enrichment: all non-empty confidence values, count desc ---
+    # --- Lawyer headcount enrichment ---
+    # Count non-empty confidence values, then show only meaningful categories:
+    # drop error/timeout states and anything that rounds to 0%.
     conf_counts = {}
     for _, _, _, _, confidence in filtered:
         if confidence:
             conf_counts[confidence] = conf_counts.get(confidence, 0) + 1
 
+    error_states = {"TIMEOUT", "UNSTRUCTURED_RESPONSE"}
     headcount_confidence = [
         {"label": label, "count": count, "pct": pct_of(count, total)}
         for label, count in sorted(conf_counts.items(), key=lambda x: -x[1])
+        if label not in error_states and pct_of(count, total) > 0
     ]
 
     return {
