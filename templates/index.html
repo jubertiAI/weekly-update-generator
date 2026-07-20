@@ -634,16 +634,13 @@ For visibility on the contacts side: X contacts were created last week.`;
             // Stats table with sections
             let rows = "";
 
-            // Account Type section
+            // Account Type section (AUM enriched shown as a sub-row of Asset Management)
             rows += `<tr class="section-header"><td colspan="2">Account Type</td></tr>`;
             c.account_types.forEach((a) => {
                 rows += `<tr><td>${a.label}</td><td>${fmt(a.count)} (${a.pct}%)</td></tr>`;
-            });
-
-            // Law Firm sub-types
-            rows += `<tr class="section-header"><td colspan="2">Law Firm Sub-types</td></tr>`;
-            c.law_firm_subtypes.forEach((s) => {
-                rows += `<tr class="sub-row"><td>${s.label}</td><td>${fmt(s.count)} (${s.pct}% of Law Firms)</td></tr>`;
+                if (a.aum_enriched) {
+                    rows += `<tr class="sub-row"><td>AUM enriched</td><td>${fmt(a.aum_enriched.count)} (${a.aum_enriched.pct}% of Asset Mgmt)</td></tr>`;
+                }
             });
 
             // Regions
@@ -651,6 +648,14 @@ For visibility on the contacts side: X contacts were created last week.`;
             c.regions.forEach((r) => {
                 rows += `<tr><td>${r.label}</td><td>${fmt(r.count)} (${r.pct}%)</td></tr>`;
             });
+
+            // Lawyer headcount enrichment
+            if (c.headcount_confidence && c.headcount_confidence.length) {
+                rows += `<tr class="section-header"><td colspan="2">Lawyer Headcount Enrichment</td></tr>`;
+                c.headcount_confidence.forEach((h) => {
+                    rows += `<tr><td>${h.label}</td><td>${fmt(h.count)} (${h.pct}%)</td></tr>`;
+                });
+            }
 
             // Totals
             rows += `<tr class="total-row"><td>Filtered (this week)</td><td>${fmt(c.filtered)}</td></tr>`;
@@ -664,22 +669,19 @@ For visibility on the contacts side: X contacts were created last week.`;
 
             // Harvey Slack message
             const weekLabel = data.selected_week.label;
-            const lf = c.account_types.find((a) => a.label === "Law Firm");
-            const lf_subtypes = c.law_firm_subtypes;
 
             let msg = `Hello team! Quick weekly update on the live lead enrichment workflow.
 
 Here's last week's snapshot (${weekLabel}):
+
 * ${fmt(c.filtered)} new leads
 
 By account type:`;
 
             c.account_types.forEach((a) => {
                 msg += `\n* ${a.label}: ${fmt(a.count)} (${a.pct}%)`;
-                if (a.label === "Law Firm") {
-                    lf_subtypes.forEach((s) => {
-                        msg += `\n   * ${s.label}: ${fmt(s.count)} (${s.pct}% of Law Firms)`;
-                    });
+                if (a.aum_enriched) {
+                    msg += `\n  * AUM enriched: ${fmt(a.aum_enriched.count)} (${a.aum_enriched.pct}%)`;
                 }
             });
 
@@ -688,7 +690,14 @@ By account type:`;
                 msg += `\n* ${r.label}: ${fmt(r.count)} (${r.pct}%)`;
             });
 
-            msg += `\n\nEverything running smoothly, no action needed on your side \u{1F64C}`;
+            if (c.headcount_confidence && c.headcount_confidence.length) {
+                msg += `\n\nLawyer headcount enrichment:`;
+                c.headcount_confidence.forEach((h) => {
+                    msg += `\n* \`${h.label}\` - ${h.pct}%`;
+                });
+            }
+
+            msg += `\n\nEverything running smoothly, no action needed on your side`;
 
             messageBox.textContent = msg;
             messageSection.classList.add("visible");

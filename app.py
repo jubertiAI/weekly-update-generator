@@ -257,13 +257,30 @@ def _build_response(rows, monday, sunday, session_id, weeks, skip_info=None):
 # Harvey workflow (new)
 # ---------------------------------------------------------------------------
 def _parse_harvey_csv(file_stream):
-    """Parse Harvey CSV row-by-row, keeping only the 4 columns we need.
+    """Parse Harvey CSV row-by-row, keeping only the columns we need.
 
     Uses csv.reader with index lookup so the large reasoning columns
-    are discarded immediately and never stored in memory.
+    are discarded immediately and never stored in memory. Each returned
+    row is (date, account_type, country, aum, headcount_confidence).
     """
-    text_stream = io.TextIOWrapper(file_stream, encoding="utf-8-sig", errors="replace")
-    reader = csv.reader(text_stream)
+    # Decode the upload line-by-line straight from the byte stream. This keeps
+    # the row-by-row streaming (never loads the whole file) and, unlike
+    # io.TextIOWrapper, works regardless of stream type / Python version
+    # (Flask spools large uploads to a SpooledTemporaryFile, which lacks
+    # .readable() on Python < 3.11). Stray NUL bytes are stripped so csv
+    # doesn't raise "line contains NUL"; csv.reader reassembles quoted
+    # multi-line fields from this iterator.
+    def _lines(byte_stream):
+        first = True
+        for raw in byte_stream:
+            text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+            if first:
+                first = False
+                if text[:1] == "﻿":  # strip UTF-8 BOM
+                    text = text[1:]
+            yield text.replace("\x00", "")
+
+    reader = csv.reader(_lines(file_stream))
 
     try:
         header = next(reader)
@@ -273,9 +290,13 @@ def _parse_harvey_csv(file_stream):
     date_idx = col_map.get("date_day")
     if date_idx is None:
         return []
-    ltt_idx = col_map.get("legal_team_type")
-    ot_idx = col_map.get("organization_type")
+    acct_idx = col_map.get("reconciled_legal_team_type")
     co_idx = col_map.get("normalized_country")
+    aum_idx = col_map.get("AUM")
+    conf_idx = col_map.get("Agentic_Lawyer_Headcount_Confidence")
+
+    def get(fields, idx):
+        return fields[idx].strip() if idx is not None and idx < len(fields) else ""
 
     rows = []
     for fields in reader:
@@ -284,18 +305,19 @@ def _parse_harvey_csv(file_stream):
         dt = _parse_date(fields[date_idx])
         if dt is None:
             continue
-        legal_team_type = fields[ltt_idx].strip() if ltt_idx is not None and ltt_idx < len(fields) else ""
-        org_type = fields[ot_idx].strip() if ot_idx is not None and ot_idx < len(fields) else ""
-        country = fields[co_idx].strip() if co_idx is not None and co_idx < len(fields) else ""
-        rows.append((dt, legal_team_type, org_type, country))
+        account_type = get(fields, acct_idx)
+        country = get(fields, co_idx)
+        aum = get(fields, aum_idx)
+        confidence = get(fields, conf_idx)
+        rows.append((dt, account_type, country, aum, confidence))
     return rows
 
 
 def _count_harvey(rows, monday, sunday):
     """Filter Harvey rows to Mon-Sun range and compute breakdowns.
 
-    Returns dict with total_file, filtered, account_types, law_firm_subtypes, regions.
-    Each breakdown has items with label, count, pct.
+    Returns dict with total_file, filtered, account_types, regions,
+    headcount_confidence. Rows are (date, account_type, country, aum, confidence).
     """
     total_file = len(rows)
     start = monday.replace(hour=0, minute=0, second=0)
@@ -304,59 +326,66 @@ def _count_harvey(rows, monday, sunday):
     filtered = [r for r in rows if start <= r[0] <= end]
     total = len(filtered)
 
-    # --- Account types ---
-    acct_counts = {"In-House": 0, "Law Firm": 0, "Asset Management": 0, "Unclassified": 0}
-    for _, legal_team_type, _, _ in filtered:
-        if legal_team_type == "In-House":
-            acct_counts["In-House"] += 1
-        elif legal_team_type == "Law Firm":
-            acct_counts["Law Firm"] += 1
-        elif legal_team_type == "Asset Management":
-            acct_counts["Asset Management"] += 1
-        else:
-            acct_counts["Unclassified"] += 1
+    def pct_of(count, denom):
+        return round(count * 100 / denom) if denom else 0
+
+    # --- Account types: show ALL values found (blank -> "Unclassified") ---
+    acct_counts = {}
+    for _, account_type, _, _, _ in filtered:
+        label = account_type if account_type else "Unclassified"
+        acct_counts[label] = acct_counts.get(label, 0) + 1
+
+    # AUM enrichment among Asset Management rows only.
+    am_rows = [r for r in filtered if r[1] == "Asset Management"]
+    am_total = len(am_rows)
+    am_with_aum = sum(1 for r in am_rows if r[3])
+
+    # Order: all real types by count desc, then "Unclassified" last.
+    ordered = sorted(
+        (l for l in acct_counts if l != "Unclassified"),
+        key=lambda l: -acct_counts[l],
+    )
+    if "Unclassified" in acct_counts:
+        ordered.append("Unclassified")
 
     account_types = []
-    for label in ["In-House", "Law Firm", "Asset Management", "Unclassified"]:
+    for label in ordered:
         count = acct_counts[label]
-        pct = round(count * 100 / total) if total else 0
-        account_types.append({"label": label, "count": count, "pct": pct})
-
-    # --- Law Firm sub-types (only rows where legal_team_type == "Law Firm") ---
-    lf_rows = [r for r in filtered if r[1] == "Law Firm"]
-    lf_total = len(lf_rows)
-    lf_counts = {"Full Service": 0, "Litigation": 0, "Transactional": 0}
-    for _, _, org_type, _ in lf_rows:
-        if org_type == "Full Service Law Firm":
-            lf_counts["Full Service"] += 1
-        elif org_type == "Litigation Law Firm":
-            lf_counts["Litigation"] += 1
-        elif org_type == "Transactional Law Firm":
-            lf_counts["Transactional"] += 1
-
-    law_firm_subtypes = []
-    for label in ["Full Service", "Litigation", "Transactional"]:
-        count = lf_counts[label]
-        pct = round(count * 100 / lf_total) if lf_total else 0
-        law_firm_subtypes.append({"label": label, "count": count, "pct": pct})
+        entry = {"label": label, "count": count, "pct": pct_of(count, total)}
+        if label == "Asset Management":
+            entry["aum_enriched"] = {
+                "count": am_with_aum,
+                "pct": pct_of(am_with_aum, am_total),
+            }
+        account_types.append(entry)
 
     # --- Regions ---
     region_counts = {"AMER": 0, "EMEA": 0, "ROW": 0}
-    for _, _, _, country in filtered:
+    for _, _, country, _, _ in filtered:
         region_counts[_country_to_region(country)] += 1
 
-    regions = []
-    for label in ["AMER", "EMEA", "ROW"]:
-        count = region_counts[label]
-        pct = round(count * 100 / total) if total else 0
-        regions.append({"label": label, "count": count, "pct": pct})
+    regions = [
+        {"label": label, "count": region_counts[label], "pct": pct_of(region_counts[label], total)}
+        for label in ["AMER", "EMEA", "ROW"]
+    ]
+
+    # --- Lawyer headcount enrichment: all non-empty confidence values, count desc ---
+    conf_counts = {}
+    for _, _, _, _, confidence in filtered:
+        if confidence:
+            conf_counts[confidence] = conf_counts.get(confidence, 0) + 1
+
+    headcount_confidence = [
+        {"label": label, "count": count, "pct": pct_of(count, total)}
+        for label, count in sorted(conf_counts.items(), key=lambda x: -x[1])
+    ]
 
     return {
         "total_file": total_file,
         "filtered": total,
         "account_types": account_types,
-        "law_firm_subtypes": law_firm_subtypes,
         "regions": regions,
+        "headcount_confidence": headcount_confidence,
     }
 
 
